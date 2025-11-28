@@ -10,7 +10,7 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 API_KEY = os.getenv("GEMINI_API_KEY")
 
 # Configure the generative model
-genai.configure(api_key=API_KEY)
+genai.configure(AIzaSyDxRyc7AwS6QwtnbSJyrAnpIVJKJu9RMEI)
 model = genai.GenerativeModel('gemini-2.5-flash')
 
 def generate_content(full_prompt: str) -> str:
