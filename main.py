@@ -1,59 +1,67 @@
 import os
 import time
 import asyncio
-from telegram import Update, InputFile
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters
-)
+from telethon import TelegramClient, events
 from imageio_ffmpeg import get_ffmpeg_exe
 
+API_ID = "13876032"
+API_HASH = "c87c88faace9139628f6c7ffc2662bff"
+BOT_TOKEN = "7660988574:AAHMZ9BU45PudZ5XMgJD4f4_OzSQoadRbRc"
 
-TOKEN = os.getenv("TELEGRAM_TOKEN")  # define en variables de entorno
-MAX_SIZE = 900 * 1024 * 1024         # 900 MB
+client = TelegramClient(
+    "bot_session",
+    API_ID,
+    API_HASH
+).start(bot_token=BOT_TOKEN)
+
+MAX_SIZE_MB = 2000    # límite lógico, no API (puedes subirlo)
+DOWNLOAD_DIR = "downloads"
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🎥 Bienvenido!\nEnvía un video y lo comprimiré automáticamente\n📉 Resolución: 360p\n📦 Codec: H.265"
-    )
-
-
-def human_size(b):
+def human(b):
     return f"{b/1024/1024:.2f}MB"
 
 
-async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    video = update.message.video
-
-    if video.file_size > MAX_SIZE:
-        await update.message.reply_text("❌ Archivo demasiado grande (máx. 900MB)")
-        return
-
-    processing_msg = await update.message.reply_text("📥 Descargando video...")
-
-    file = await video.get_file()
-    os.makedirs("downloads", exist_ok=True)
-    input_path = f"downloads/{video.file_name or 'video.mp4'}"
-    output_path = f"downloads/compressed_{int(time.time())}.mp4"
-
-    await file.download_to_drive(input_path)
-
-    await processing_msg.edit_text(
-        f"📦 Original: {human_size(video.file_size)}\n🔧 Comprimiendo a 360p..."
+@client.on(events.NewMessage(pattern="/start"))
+async def start(event):
+    await event.reply(
+        "🎥 Bot compresor activo.\n"
+        "📥 Envíame un video y lo comprimiré a 360p con H265."
     )
 
-    start_time = time.time()
-    ffmpeg = get_ffmpeg_exe()
 
-    # ✨ PARÁMETROS ÓPTIMOS (muy agresivo)
-    # x265 + crf alto + preset slow
+@client.on(events.NewMessage)
+async def handle_video(event):
+    if not event.video and not event.document:
+        return
+
+    media = event.video or event.document
+    size = media.size
+
+    if size > MAX_SIZE_MB * 1024 * 1024:
+        await event.reply(f"❌ Muy grande (máx {MAX_SIZE_MB}MB)")
+        return
+
+    status = await event.reply(
+        f"📥 Recibido. Tamaño: {human(size)}"
+        "\n🔻 Descargando..."
+    )
+
+    file_path = f"{DOWNLOAD_DIR}/{media.id}.mp4"
+    await client.download_media(media, file_path)
+
+    await status.edit(
+        "📦 Descarga completada\n"
+        "🔧 Comprimiendo a 360p..."
+    )
+
+    compressed = f"{DOWNLOAD_DIR}/compressed_{int(time.time())}.mp4"
+
+    ffmpeg = get_ffmpeg_exe()
     cmd = [
         ffmpeg, "-y",
-        "-i", input_path,
+        "-i", file_path,
         "-vf", "scale=-2:360",
         "-c:v", "libx265",
         "-preset", "slow",
@@ -61,45 +69,39 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "-pix_fmt", "yuv420p",
         "-c:a", "aac",
         "-b:a", "64k",
-        output_path
+        compressed
     ]
 
+    start_t = time.time()
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
+        stderr=asyncio.subprocess.PIPE,
     )
     await proc.communicate()
 
-    if proc.returncode != 0 or not os.path.exists(output_path):
-        await processing_msg.edit_text("❌ Error al comprimir video")
+    if not os.path.exists(compressed):
+        await status.edit("❌ Error al comprimir.")
         return
 
-    duration = time.time() - start_time
-    compressed_size = os.path.getsize(output_path)
+    dur = time.time() - start_t
+    new_size = os.path.getsize(compressed)
 
-    await processing_msg.edit_text(
-        f"✔️ Finalizado\n⏱ Tiempo: {duration:.1f}s\n"
-        f"📦 Original: {human_size(video.file_size)}\n"
-        f"📉 Comprimido: {human_size(compressed_size)}"
+    await status.edit(
+        f"✔️ Listo!\n"
+        f"⏱ {dur:.1f}s\n"
+        f"📉 Final: {human(new_size)}"
     )
 
-    await context.bot.send_video(
-        chat_id=update.message.chat.id,
-        video=InputFile(output_path),
-        caption=f"🎥 Tamaño final: {human_size(compressed_size)}"
+    await client.send_file(
+        event.chat_id,
+        compressed,
+        caption=f"🎥 Tamaño: {human(new_size)}",
     )
 
-    os.remove(input_path)
-    os.remove(output_path)
+    os.remove(file_path)
+    os.remove(compressed)
 
 
-def main():
-    app = ApplicationBuilder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.VIDEO, handle_video))
-    app.run_polling()
-
-
-if __name__ == "__main__":
-    main()
+print("🤖 Bot Telethon ejecutándose...")
+client.run_until_disconnected()
